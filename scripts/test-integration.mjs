@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, cp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
 import { hashPassword } from '../lib/password.mjs';
+import { assembleRelease } from './assemble-release.mjs';
 const testDir = await mkdtemp(path.join(tmpdir(), 'milo-test-'));
 const origin = 'http://127.0.0.1:3197', basePath = '/milo';
 const password = 'integration-test-only-password';
-await cp('.next/static', '.next/standalone/.next/static', { recursive: true });
-await cp('public', '.next/standalone/public', { recursive: true });
+const release = path.join(testDir, 'release');
+await assembleRelease(process.cwd(), release);
 await mkdir('work/integration', { recursive: true });
 for (const name of ['exercises', 'data']) {
   const source = await readFile(`app/${name}.ts`, 'utf8');
@@ -18,9 +19,9 @@ for (const name of ['exercises', 'data']) {
 }
 const { initialState } = await import(path.resolve('work/integration/data.mjs'));
 let child;
-const environment = { ...process.env, NODE_ENV: 'production', NEXT_TELEMETRY_DISABLED: '1', HOSTNAME: '127.0.0.1', PORT: '3197', APP_ORIGIN: origin, NEXT_PUBLIC_BASE_PATH: basePath, AUTH_PASSWORD_HASH: hashPassword(password), DATABASE_PATH: path.join(testDir, 'milo.sqlite') };
+const environment = { ...process.env, NODE_ENV: 'production', NEXT_TELEMETRY_DISABLED: '1', HOSTNAME: '127.0.0.1', PORT: '3197', APP_ORIGIN: origin, NEXT_PUBLIC_BASE_PATH: basePath, AUTH_PASSWORD_HASH: hashPassword(password), DATABASE_PATH: path.join(testDir, 'milo.sqlite'), MILO_RELEASE_ID: 'source-release-test' };
 async function start() {
-  child = spawn(process.execPath, ['.next/standalone/server.js'], { env: environment, stdio: 'pipe' });
+  child = spawn(process.execPath, [path.join(release, 'server.js')], { cwd: release, env: environment, stdio: 'pipe' });
   let logs = ''; child.stderr.on('data', b => { logs += b.toString(); });
   for (let i = 0; i < 100; i++) {
     if (child.exitCode !== null) throw new Error(`Server stopped: ${logs}`);
@@ -33,6 +34,7 @@ async function stop() { if (child && child.exitCode === null) { const done = new
 const request = (url, options = {}) => fetch(origin + basePath + url, { redirect: 'manual', ...options });
 try {
   await start();
+  assert.deepEqual(await (await request('/api/health')).json(), { status: 'ok', release: 'source-release-test' });
   assert.equal((await request('/api/state')).status, 401);
   const landing = await request(''); assert.equal(landing.status, 307); assert.equal(new URL(landing.headers.get('location'), origin).pathname, '/milo/login');
   assert.equal((await fetch(new URL(landing.headers.get('location'), origin))).status, 200);

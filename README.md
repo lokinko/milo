@@ -1,10 +1,10 @@
 # Milo · 循日健康规划
 
-从现有循日 Site 迁出的独立部署版。保留每日安排、一周饮食、术后康复、居家/工位教程、就诊随访、健康记录和 WalkBack 研究解读。使用独立密码登录、服务器 SQLite 保存；不依赖 ChatGPT 或 Cloudflare D1。
+从现有循日 Site 迁出的独立源码版。保留每日安排、一周饮食、术后康复、居家/工位教程、就诊随访、健康记录和 WalkBack 研究解读。使用独立密码登录、服务器 SQLite 保存，无需 ChatGPT 认证。
 
-## 一键部署
+## 源码一键部署
 
-在 **Linux 服务器**执行。前置条件：Docker Engine、Docker Compose v2、Python 3、curl，以及已经服务 `www.madeagents.ai` 的 Nginx HTTPS 配置。脚本不安装/替换系统组件，不申请 TLS 证书，不改 DNS。
+在 **Linux / systemd 服务器**执行，建议 Ubuntu 22.04+ 或 Debian 12+。服务器需有 Python 3、curl、tar/xz、标准系统工具，以及已服务 `www.madeagents.ai` 的 Nginx HTTPS 配置。DNS 和证书须已就绪。
 
 ```bash
 git clone https://github.com/lokinko/milo.git
@@ -12,48 +12,81 @@ cd milo
 sudo ./deploy.sh
 ```
 
-首次运行输入并确认一个 12–256 字符的密码。脚本会：
+首次输入并确认一个 12–256 字符的独立密码。脚本会：
 
-1. 查找 `server_name www.madeagents.ai` 的 HTTPS server 块；无法唯一定位时停止，不覆盖现有站点。
-2. 将密码的 scrypt 加盐散列保存在忽略的 `.deploy/` 目录，不保存明文密码。
-3. 更新前创建一致的 SQLite 备份，构建并启动非 root Docker 容器。
-4. 验证应用健康，给现有 server 块添加 `/milo` 路由；`nginx -t` 通过后再 reload。
-5. 验证本机 HTTPS 路由，成功后输出 `https://www.madeagents.ai/milo`。
+1. 检查现有 Nginx HTTPS 配置，定位 `server_name www.madeagents.ai`，只增加 `/milo` 路由。
+2. 使用可用的系统 Node.js 24+；若没有，从 Node.js 官网下载 Node.js 24，校验 SHA256，安装到 `/opt/milo/runtime/node`，不替换系统 Node.js。
+3. 以非 root 用户 `milo` 执行 `npm ci --include=dev` 和源码构建，组装包含静态资源的 Next.js standalone 发布目录。
+4. 更新前备份 SQLite，切换版本，启动 `milo.service`；检查实际新版本的健康状态，失败则恢复上一版本和登录配置。
+5. 校验、重载 Nginx，并验证本机 HTTPS 入口，成功后输出 `https://www.madeagents.ai/milo`。
 
-应用只绑定 `127.0.0.1:3088`；主站的其他路由保留。数据库存放在固定 Docker volume `milo-data`，容器更新/重建不会删除它。**不要执行 `docker volume rm milo-data`。**
+应用监听 `127.0.0.1:3088`。systemd 管理进程、异常重启及开机启动。第一次准备 Node.js 与安装依赖需要访问 `nodejs.org` 和 npm registry；建议至少 2GB 可用内存。
 
-后续更新：
+## 更新与管理
+
+在原源码仓库目录执行：
 
 ```bash
 git pull --ff-only
 sudo ./deploy.sh
 ```
 
-如果 Nginx 配置较复杂或使用宝塔，可明确指定已启用的配置文件：
+构建新版本时旧服务继续运行，切换时会短暂重启。原密码和健康记录自动保留。每次发布保留独立目录及上一版本，便于恢复；数据库备份保存于独立目录。
 
 ```bash
-sudo ./deploy.sh --nginx-config /www/server/panel/vhost/nginx/www.madeagents.ai.conf
+sudo systemctl status milo
+sudo journalctl -u milo -f
+sudo systemctl restart milo
+sudo ./deploy.sh --reset-password
 ```
 
-先检查而不部署：`sudo ./deploy.sh --check`。只启动应用并生成 `.deploy/nginx-milo.conf`：`sudo ./deploy.sh --skip-nginx`，此模式不会声称域名已部署。生成的片段需要 include 在主站 server 块内部。
+`--reset-password` 会使旧登录会话失效。
 
-可选：`--origin https://your-domain.example --path /milo --port 3088`。路径更改会重新构建。`--reset-password` 设置新密码并使旧登录会话失效。备份位于 `backups/`；Nginx 原始配置备份在 `.deploy/nginx-backups/`。应用新版本启动失败时，脚本恢复上一镜像与配置；Nginx 校验/reload 失败时恢复原 Nginx 文件。
+| 路径 | 内容 |
+| --- | --- |
+| `/opt/milo/current` | 指向当前发布版本的符号链接 |
+| `/opt/milo/releases/` | 独立发布目录，代码更新不写入原版本 |
+| `/opt/milo/shared/data/milo.sqlite` | 持久化健康记录与登录会话 |
+| `/opt/milo/shared/backups/` | 更新前的一致 SQLite 备份 |
+| `/opt/milo/shared/.deploy/` | 私密配置与密码散列，目录 700、配置 600 |
+| `/etc/systemd/system/milo.service` | 服务配置，不含密码散列 |
+| 源码目录的 `.deploy/nginx-backups/` | Nginx 配置备份 |
 
-若 Docker 尚未安装，请先按 [Docker 官方 Linux 安装文档](https://docs.docker.com/engine/install/) 配置。新域名的 DNS 和已有 HTTPS 证书需先就绪。首次构建需要访问 Docker Hub 与 npm registry，并建议服务器有至少 2GB 可用内存。
+源码目录不存储生产数据库和密码。不要删除 `/opt/milo/shared`；它保存真实健康记录。旧发布目录和备份由你按需要保留，脚本不会自动清理历史数据。
 
-## 迁移已有健康记录
+## 部署选项
 
-这个 GitHub 仓库是公开的，初始档案与检查数据已经替换为通用示例，不含原用户的个人体检信息；密钥、数据库、备份和运行配置均不进入 Git 或 Docker 构建上下文。
+```bash
+# 先检查环境和 Nginx，不构建、不启动服务
+sudo ./deploy.sh --check
+
+# 宝塔或复杂 Nginx 配置：明确指定已经启用的配置文件
+sudo ./deploy.sh --nginx-config /www/server/panel/vhost/nginx/www.madeagents.ai.conf
+
+# 可选的域名、子路径和内部端口
+sudo ./deploy.sh --origin https://your-domain.example --path /milo --port 3088
+
+# 启动应用、生成 Nginx 片段，暂不安装路由
+sudo ./deploy.sh --skip-nginx
+```
+
+`--skip-nginx` 生成源码目录的 `.deploy/nginx-milo.conf`，需要 include 到现有主站 server 块内部。可以在第一次部署指定 `--install-dir /srv/milo`，之后每次沿用该选项；已有安装不能用这个参数搬迁数据库。
+
+脚本不申请证书、不修改 DNS。无法唯一定位 Nginx server 块或已有手工 `/milo` 路由时停止；请指定正确配置或先处理路由冲突。Nginx 校验/reload 失败会恢复原 Nginx 文件，同时恢复上一应用版本。若最终 HTTPS 访问校验失败，保留已健康启动的版本，并明确报错供检查域名、证书和 Nginx 设置。
+
+## 导入原网站健康记录
+
+仓库是公开的，初始个人档案和体检结果已替换为通用示例。密钥、数据库、备份和运行配置不进入 Git，也不进入发布目录。
 
 1. 在原循日 Site 的“我的档案”或“健康记录”中导出 JSON 完整备份。
-2. 用独立密码登录 Milo，进入“我的档案 → 保存与迭代 → 导入原网站的 JSON 备份”。
-3. 核对后确认导入，再点击“保存修改”。旧档案、餐单、记录、医嘱与训练设置会一并导入；未保存前仅在当前页面中替换。
+2. 登录 Milo，进入“我的档案 → 保存与迭代 → 导入原网站的 JSON 备份”。
+3. 核对、确认导入，再点击“保存修改”。档案、餐单、每日记录、医嘱与训练设置会一并导入。
 
-请把健康备份保存在私密位置，勿提交到公开仓库。此版是一个个人空间，只有一个独立密码；不是多用户账号系统。
+健康备份请保存在私密位置。此版是只有一个独立密码的个人空间。
 
-## 本地开发与验证
+## 开发与验证
 
-需 Node.js 24+、npm、Python 3。
+本地需 Node.js 24+、npm、Python 3。
 
 ```bash
 npm ci
@@ -62,12 +95,10 @@ npm run build
 npm run test:integration
 ```
 
-生产集成检查覆盖 `/milo` 资源路径、登录、CSRF、输入校验、保存冲突、大小限制、重启持久化、退出撤销和登录限流。Nginx 测试覆盖正确 HTTPS server 选择、其他站点保留、重复执行及已有路由冲突。
+集成测试从与部署相同的 standalone 发布目录启动实际 Node.js 服务，检查资源路径、独立登录、CSRF、校验、保存冲突、重启持久化、退出撤销和限流。测试还检查生产配置权限、更新保留密码、密码重置、systemd 配置及 Nginx 路由安装逻辑。
 
-迁移时已通过生产构建、集成测试、浏览器登录与页面检查、Docker 镜像构建。完整部署流程仍需在目标 Linux/Nginx 服务器验证；本机 Docker Desktop 的测试容器启动阻塞，未据此宣称服务器部署已完成。
+本机已验证源码构建与实际发布目录中的应用行为；目标 Linux/systemd/Nginx 服务器尚未实际执行完整部署流程。
 
-本地开发需设置 `APP_ORIGIN=http://localhost:3000` 和 `AUTH_PASSWORD_HASH`（用 `lib/password.mjs` 的 `hashPassword` 生成，写入忽略的 `.env.local`），然后运行 `npm run dev`。生产部署请使用 `deploy.sh`。
+本地开发设置 `APP_ORIGIN=http://localhost:3000` 和 `AUTH_PASSWORD_HASH`（用 `lib/password.mjs` 的 `hashPassword` 生成，写入忽略的 `.env.local`），然后 `npm run dev`。
 
-## 实现与依据
-
-Next.js standalone、Node.js 内置 SQLite、Docker Compose、Nginx 路径代理。参考 [Next.js standalone](https://nextjs.org/docs/app/api-reference/config/next-config-js/output)、[Node.js SQLite](https://nodejs.org/docs/latest-v24.x/api/sqlite.html)、[Nginx proxy_pass](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass)。医疗研究来源保留在站内；生活计划和教程不能代替个体医嘱。
+参考：[Next.js standalone](https://nextjs.org/docs/app/api-reference/config/next-config-js/output)、[Node.js SQLite](https://nodejs.org/docs/latest-v24.x/api/sqlite.html)、[systemd 执行配置](https://github.com/systemd/systemd/blob/main/man/systemd.exec.xml)、[Nginx proxy_pass](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass)。医疗研究来源保留在站内。
