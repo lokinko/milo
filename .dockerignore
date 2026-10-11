@@ -1,0 +1,13 @@
+.git
+node_modules
+.next
+.env*
+data
+backups
+.deploy
+work
+tests
+*.tsbuildinfo
+*.sqlite*
+__pycache__
+*.pyc

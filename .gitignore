@@ -1,0 +1,15 @@
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+.env*
+!.env.example
+data/
+backups/
+.deploy/
+work/
+*.sqlite*
+.DS_Store
+npm-debug.log*
+__pycache__/
+*.pyc
